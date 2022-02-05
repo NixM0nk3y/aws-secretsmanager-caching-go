@@ -16,13 +16,11 @@
 package secretcache
 
 import (
+	"context"
 	"math"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/request"
-	"github.com/aws/aws-sdk-go/service/secretsmanager"
-	"github.com/aws/aws-sdk-go/service/secretsmanager/secretsmanageriface"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
 // cacheVersion is the cache object for a secret version.
@@ -32,7 +30,7 @@ type cacheVersion struct {
 }
 
 // newCacheVersion initialises a cacheVersion to cache a secret version.
-func newCacheVersion(config CacheConfig, client secretsmanageriface.SecretsManagerAPI, secretId string, versionId string) cacheVersion {
+func newCacheVersion(config CacheConfig, client ClientAPI, secretId string, versionId string) cacheVersion {
 	return cacheVersion{
 		versionId:   versionId,
 		cacheObject: &cacheObject{config: config, client: client, secretId: secretId, refreshNeeded: true},
@@ -45,14 +43,14 @@ func (cv *cacheVersion) isRefreshNeeded() bool {
 }
 
 // refresh the cached object when needed.
-func (cv *cacheVersion) refresh() {
+func (cv *cacheVersion) refresh(ctx context.Context) {
 	if !cv.isRefreshNeeded() {
 		return
 	}
 
 	cv.refreshNeeded = false
 
-	result, err := cv.executeRefresh()
+	result, err := cv.executeRefresh(ctx)
 
 	if err != nil {
 		cv.errorCount++
@@ -72,21 +70,21 @@ func (cv *cacheVersion) refresh() {
 
 // executeRefresh performs the actual refresh of the cached secret information.
 // Returns the GetSecretValue API result and an error if operation fails.
-func (cv *cacheVersion) executeRefresh() (*secretsmanager.GetSecretValueOutput, error) {
+func (cv *cacheVersion) executeRefresh(ctx context.Context) (*secretsmanager.GetSecretValueOutput, error) {
 	input := &secretsmanager.GetSecretValueInput{
 		SecretId:  &cv.secretId,
 		VersionId: &cv.versionId,
 	}
-	return cv.client.GetSecretValueWithContext(aws.BackgroundContext(), input, request.WithAppendUserAgent(userAgent()))
+	return cv.client.GetSecretValue(ctx, input)
 }
 
 // getSecretValue gets the cached secret version value.
 // Returns the GetSecretValue API cached result and an error if operation fails.
-func (cv *cacheVersion) getSecretValue() (*secretsmanager.GetSecretValueOutput, error) {
+func (cv *cacheVersion) getSecretValue(ctx context.Context) (*secretsmanager.GetSecretValueOutput, error) {
 	cv.mux.Lock()
 	defer cv.mux.Unlock()
 
-	cv.refresh()
+	cv.refresh(ctx)
 
 	return cv.getWithHook(), cv.err
 }

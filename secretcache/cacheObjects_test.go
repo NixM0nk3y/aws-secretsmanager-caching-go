@@ -14,14 +14,12 @@
 package secretcache
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/request"
-	"github.com/aws/aws-sdk-go/service/secretsmanager"
-	"github.com/aws/aws-sdk-go/service/secretsmanager/secretsmanageriface"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
 func TestIsRefreshNeededBase(t *testing.T) {
@@ -74,7 +72,7 @@ func TestMaxCacheTTL(t *testing.T) {
 	config := CacheConfig{CacheItemTTL: -1}
 	cacheItem.config = config
 
-	_, err := cacheItem.executeRefresh()
+	_, err := cacheItem.executeRefresh(context.Background())
 
 	if err == nil {
 		t.Fatalf("Expected error due to negative cache ttl")
@@ -83,7 +81,7 @@ func TestMaxCacheTTL(t *testing.T) {
 	config = CacheConfig{CacheItemTTL: 0}
 	cacheItem.config = config
 
-	_, err = cacheItem.executeRefresh()
+	_, err = cacheItem.executeRefresh(context.Background())
 
 	if err != nil {
 		t.Fatalf("Unexpected error on zero cache ttl")
@@ -91,11 +89,14 @@ func TestMaxCacheTTL(t *testing.T) {
 }
 
 type dummyClient struct {
-	secretsmanageriface.SecretsManagerAPI
 }
 
-func (d *dummyClient) DescribeSecretWithContext(context aws.Context, input *secretsmanager.DescribeSecretInput, opts ...request.Option) (*secretsmanager.DescribeSecretOutput, error) {
+func (d *dummyClient) DescribeSecret(ctx context.Context, params *secretsmanager.DescribeSecretInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
 	return &secretsmanager.DescribeSecretOutput{}, nil
+}
+
+func (d *dummyClient) GetSecretValue(ctx context.Context, params *secretsmanager.GetSecretValueInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	return &secretsmanager.GetSecretValueOutput{}, nil
 }
 
 // Helper function to get a string pointer for input string.

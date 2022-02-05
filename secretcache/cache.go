@@ -16,16 +16,18 @@
 package secretcache
 
 import (
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/secretsmanager"
-	"github.com/aws/aws-sdk-go/service/secretsmanager/secretsmanageriface"
+	"context"
+
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-xray-sdk-go/instrumentation/awsv2"
 )
 
 // Cache client for AWS Secrets Manager secrets.
 type Cache struct {
 	lru *lruCache
 	CacheConfig
-	Client secretsmanageriface.SecretsManagerAPI
+	Client ClientAPI
 }
 
 // New constructs a secret cache using functional options, uses defaults otherwise.
@@ -54,12 +56,15 @@ func New(optFns ...func(*Cache)) (*Cache, error) {
 
 	//Initialise the secrets manager client
 	if cache.Client == nil {
-		sess, err := session.NewSession()
+
+		cfg, err := awsconfig.LoadDefaultConfig(context.TODO())
 		if err != nil {
 			return nil, err
 		}
 
-		cache.Client = secretsmanager.New(sess)
+		awsv2.AWSV2Instrumentor(&cfg.APIOptions)
+
+		cache.Client = secretsmanager.NewFromConfig(cfg)
 	}
 
 	return cache, nil
@@ -82,16 +87,16 @@ func (c *Cache) getCachedSecret(secretId string) *secretCacheItem {
 
 // GetSecretString gets the secret string value from the cache for given secret id and a default version stage.
 // Returns the secret sting and an error if operation failed.
-func (c *Cache) GetSecretString(secretId string) (string, error) {
-	return c.GetSecretStringWithStage(secretId, DefaultVersionStage)
+func (c *Cache) GetSecretString(ctx context.Context, secretId string) (string, error) {
+	return c.GetSecretStringWithStage(ctx, secretId, DefaultVersionStage)
 }
 
 // GetSecretStringWithStage gets the secret string value from the cache for given secret id and version stage.
 // Returns the secret sting and an error if operation failed.
-func (c *Cache) GetSecretStringWithStage(secretId string, versionStage string) (string, error) {
+func (c *Cache) GetSecretStringWithStage(ctx context.Context, secretId string, versionStage string) (string, error) {
 	secretCacheItem := c.getCachedSecret(secretId)
 
-	getSecretValueOutput, err := secretCacheItem.getSecretValue(versionStage)
+	getSecretValueOutput, err := secretCacheItem.getSecretValue(ctx, versionStage)
 
 	if err != nil {
 		return "", err
@@ -110,16 +115,16 @@ func (c *Cache) GetSecretStringWithStage(secretId string, versionStage string) (
 
 // GetSecretBinary gets the secret binary value from the cache for given secret id and a default version stage.
 // Returns the secret binary and an error if operation failed.
-func (c *Cache) GetSecretBinary(secretId string) ([]byte, error) {
-	return c.GetSecretBinaryWithStage(secretId, DefaultVersionStage)
+func (c *Cache) GetSecretBinary(ctx context.Context, secretId string) ([]byte, error) {
+	return c.GetSecretBinaryWithStage(ctx, secretId, DefaultVersionStage)
 }
 
 // GetSecretBinaryWithStage gets the secret binary value from the cache for given secret id and version stage.
 // Returns the secret binary and an error if operation failed.
-func (c *Cache) GetSecretBinaryWithStage(secretId string, versionStage string) ([]byte, error) {
+func (c *Cache) GetSecretBinaryWithStage(ctx context.Context, secretId string, versionStage string) ([]byte, error) {
 	secretCacheItem := c.getCachedSecret(secretId)
 
-	getSecretValueOutput, err := secretCacheItem.getSecretValue(versionStage)
+	getSecretValueOutput, err := secretCacheItem.getSecretValue(ctx, versionStage)
 
 	if err != nil {
 		return nil, err
