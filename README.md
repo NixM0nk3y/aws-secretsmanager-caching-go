@@ -32,6 +32,7 @@ The following code sample demonstrates how to get started:
 package main
 
 import (
+	"context"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-secretsmanager-caching-go/secretcache"
 )
@@ -40,8 +41,8 @@ var(
 	secretCache, _ = secretcache.New()
 )
 
-func HandleRequest(secretId string) string {
-	result, _ := secretCache.GetSecretString(secretId)
+func HandleRequest(ctx context.Context, secretId string) string {
+	result, _ := secretCache.GetSecretString(ctx, secretId)
 	// Use secret to connect to secured resource.
 	return "Success"
 }

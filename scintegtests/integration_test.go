@@ -2,21 +2,26 @@ package scintegtests
 
 import (
 	"bytes"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/secretsmanager"
-	"github.com/aws/aws-sdk-go/service/secretsmanager/secretsmanageriface"
-	"github.com/aws/aws-secretsmanager-caching-go/secretcache"
+	"context"
+	"errors"
+
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
+	"github.com/aws/smithy-go"
+
 	"math/rand"
 	"regexp"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-secretsmanager-caching-go/secretcache"
 )
 
 var (
 	randStringSet    = []rune("abcdefghijklmnopqrstuvwxyz0123456789")
 	secretNamePrefix = "scIntegTest_"
-	subTests         = []func(t *testing.T, api secretsmanageriface.SecretsManagerAPI) string{
+	subTests         = []func(t *testing.T, api *secretsmanager.Client) string{
 		integTest_getSecretBinary,
 		integTest_getSecretBinaryWithStage,
 		integTest_getSecretString,
@@ -46,7 +51,7 @@ func generateSecretName(testName string) (string, string) {
 }
 
 func createSecret(
-	testName string, secretString *string, secretBinary []byte, api secretsmanageriface.SecretsManagerAPI,
+	testName string, secretString *string, secretBinary []byte, api *secretsmanager.Client,
 ) (*secretsmanager.CreateSecretOutput, error) {
 	secretName, requestToken := generateSecretName(testName)
 	createSecretInput := &secretsmanager.CreateSecretInput{
@@ -55,12 +60,12 @@ func createSecret(
 		SecretBinary:       secretBinary,
 		ClientRequestToken: &requestToken,
 	}
-	return api.CreateSecret(createSecretInput)
+	return api.CreateSecret(context.Background(), createSecretInput)
 }
 
 // Lazily delete all the secrets we created
 // Also delete secrets created over 2 days ago, with the "scIntegTest_" prefix
-func cleanupSecrets(secretNames *[]string, secretsManagerClient *secretsmanager.SecretsManager, t *testing.T) {
+func cleanupSecrets(secretNames *[]string, secretsManagerClient *secretsmanager.Client, t *testing.T) {
 
 	// Cleanup secrets created on this test run
 	performDelete(secretNames, secretsManagerClient, true)
@@ -74,7 +79,7 @@ func cleanupSecrets(secretNames *[]string, secretsManagerClient *secretsmanager.
 	performDelete(&prevRunSecrets, secretsManagerClient, false)
 }
 
-func getPrevRunSecrets(secretsManagerClient *secretsmanager.SecretsManager) []string {
+func getPrevRunSecrets(secretsManagerClient *secretsmanager.Client) []string {
 	var nextToken *string
 	var secretNames []string
 	twoDaysAgo := time.Now().Add(-(48 * time.Hour))
@@ -82,6 +87,7 @@ func getPrevRunSecrets(secretsManagerClient *secretsmanager.SecretsManager) []st
 
 	for {
 		resp, err := secretsManagerClient.ListSecrets(
+			context.Background(),
 			&secretsmanager.ListSecretsInput{NextToken: nextToken},
 		)
 
@@ -108,7 +114,7 @@ func getPrevRunSecrets(secretsManagerClient *secretsmanager.SecretsManager) []st
 	return secretNames
 }
 
-func performDelete(secretNames *[]string, secretsManagerClient *secretsmanager.SecretsManager, forceDelete bool) {
+func performDelete(secretNames *[]string, secretsManagerClient *secretsmanager.Client, forceDelete bool) {
 	for _, secretName := range *secretNames {
 
 		if secretName == "" {
@@ -116,9 +122,9 @@ func performDelete(secretNames *[]string, secretsManagerClient *secretsmanager.S
 		}
 
 		time.Sleep(time.Second / 2)
-		_, _ = secretsManagerClient.DeleteSecret(&secretsmanager.DeleteSecretInput{
+		_, _ = secretsManagerClient.DeleteSecret(context.Background(), &secretsmanager.DeleteSecretInput{
 			SecretId:                   &secretName,
-			ForceDeleteWithoutRecovery: &forceDelete,
+			ForceDeleteWithoutRecovery: forceDelete,
 		})
 	}
 }
@@ -127,11 +133,13 @@ func TestIntegration(t *testing.T) {
 
 	// Create a new API client
 	// See https://docs.aws.amazon.com/sdk-for-go/api/aws/session/ for how the session loads credentials
-	sess, err := session.NewSession()
+
+	cfg, err := awsconfig.LoadDefaultConfig(context.TODO())
 	if err != nil {
 		t.Fatal(err)
 	}
-	secretsManagerClient := secretsmanager.New(sess)
+
+	secretsManagerClient := secretsmanager.NewFromConfig(cfg)
 
 	// Collect the secret arns created for them
 	var secretNames []string
@@ -145,7 +153,7 @@ func TestIntegration(t *testing.T) {
 	}
 }
 
-func integTest_getSecretBinary(t *testing.T, api secretsmanageriface.SecretsManagerAPI) string {
+func integTest_getSecretBinary(t *testing.T, api *secretsmanager.Client) string {
 	cache, _ := secretcache.New(
 		func(c *secretcache.Cache) { c.Client = api },
 	)
@@ -158,7 +166,7 @@ func integTest_getSecretBinary(t *testing.T, api secretsmanageriface.SecretsMana
 		return ""
 	}
 
-	resultBinary, err := cache.GetSecretBinary(*createResult.ARN)
+	resultBinary, err := cache.GetSecretBinary(context.Background(), *createResult.ARN)
 
 	if err != nil {
 		t.Error(err)
@@ -172,7 +180,7 @@ func integTest_getSecretBinary(t *testing.T, api secretsmanageriface.SecretsMana
 	return *createResult.ARN
 }
 
-func integTest_getSecretBinaryWithStage(t *testing.T, api secretsmanageriface.SecretsManagerAPI) string {
+func integTest_getSecretBinaryWithStage(t *testing.T, api *secretsmanager.Client) string {
 	cache, _ := secretcache.New(
 		func(c *secretcache.Cache) { c.Client = api },
 	)
@@ -187,7 +195,7 @@ func integTest_getSecretBinaryWithStage(t *testing.T, api secretsmanageriface.Se
 
 	updatedSecretBinary := []byte{1, 0, 0, 1, 1, 0, 0, 1}
 	updatedRequestToken := generateRandString(32)
-	_, err = api.UpdateSecret(&secretsmanager.UpdateSecretInput{
+	_, err = api.UpdateSecret(context.Background(), &secretsmanager.UpdateSecretInput{
 		SecretId:           createResult.ARN,
 		SecretBinary:       updatedSecretBinary,
 		ClientRequestToken: &updatedRequestToken,
@@ -198,7 +206,7 @@ func integTest_getSecretBinaryWithStage(t *testing.T, api secretsmanageriface.Se
 		return *createResult.ARN
 	}
 
-	resultBinary, err := cache.GetSecretBinaryWithStage(*createResult.ARN, "AWSPREVIOUS")
+	resultBinary, err := cache.GetSecretBinaryWithStage(context.Background(), *createResult.ARN, "AWSPREVIOUS")
 
 	if err != nil {
 		t.Error(err)
@@ -209,7 +217,7 @@ func integTest_getSecretBinaryWithStage(t *testing.T, api secretsmanageriface.Se
 		t.Error("Expected and result binary not the same")
 	}
 
-	resultBinary, err = cache.GetSecretBinaryWithStage(*createResult.ARN, "AWSCURRENT")
+	resultBinary, err = cache.GetSecretBinaryWithStage(context.Background(), *createResult.ARN, "AWSCURRENT")
 
 	if err != nil {
 		t.Error(err)
@@ -223,7 +231,7 @@ func integTest_getSecretBinaryWithStage(t *testing.T, api secretsmanageriface.Se
 	return *createResult.ARN
 }
 
-func integTest_getSecretString(t *testing.T, api secretsmanageriface.SecretsManagerAPI) string {
+func integTest_getSecretString(t *testing.T, api *secretsmanager.Client) string {
 	cache, _ := secretcache.New(
 		func(c *secretcache.Cache) { c.Client = api },
 	)
@@ -235,7 +243,7 @@ func integTest_getSecretString(t *testing.T, api secretsmanageriface.SecretsMana
 		return ""
 	}
 
-	resultString, err := cache.GetSecretString(*createResult.ARN)
+	resultString, err := cache.GetSecretString(context.Background(), *createResult.ARN)
 
 	if err != nil {
 		t.Error(err)
@@ -249,7 +257,7 @@ func integTest_getSecretString(t *testing.T, api secretsmanageriface.SecretsMana
 	return *createResult.ARN
 }
 
-func integTest_getSecretStringWithStage(t *testing.T, api secretsmanageriface.SecretsManagerAPI) string {
+func integTest_getSecretStringWithStage(t *testing.T, api *secretsmanager.Client) string {
 	cache, _ := secretcache.New(
 		func(c *secretcache.Cache) { c.Client = api },
 	)
@@ -264,7 +272,7 @@ func integTest_getSecretStringWithStage(t *testing.T, api secretsmanageriface.Se
 
 	updatedSecretString := "This is v2 secret string"
 	updatedRequestToken := generateRandString(32)
-	_, err = api.UpdateSecret(&secretsmanager.UpdateSecretInput{
+	_, err = api.UpdateSecret(context.Background(), &secretsmanager.UpdateSecretInput{
 		SecretId:           createResult.ARN,
 		SecretString:       &updatedSecretString,
 		ClientRequestToken: &updatedRequestToken,
@@ -275,7 +283,7 @@ func integTest_getSecretStringWithStage(t *testing.T, api secretsmanageriface.Se
 		return *createResult.ARN
 	}
 
-	resultString, err := cache.GetSecretStringWithStage(*createResult.ARN, "AWSPREVIOUS")
+	resultString, err := cache.GetSecretStringWithStage(context.Background(), *createResult.ARN, "AWSPREVIOUS")
 
 	if err != nil {
 		t.Error(err)
@@ -286,7 +294,7 @@ func integTest_getSecretStringWithStage(t *testing.T, api secretsmanageriface.Se
 		t.Errorf("Expected and result secret string are different - \"%s\", \"%s\"", secretString, resultString)
 	}
 
-	resultString, err = cache.GetSecretStringWithStage(*createResult.ARN, "AWSCURRENT")
+	resultString, err = cache.GetSecretStringWithStage(context.Background(), *createResult.ARN, "AWSCURRENT")
 
 	if err != nil {
 		t.Error(err)
@@ -300,7 +308,7 @@ func integTest_getSecretStringWithStage(t *testing.T, api secretsmanageriface.Se
 	return *createResult.ARN
 }
 
-func integTest_getSecretStringWithTTL(t *testing.T, api secretsmanageriface.SecretsManagerAPI) string {
+func integTest_getSecretStringWithTTL(t *testing.T, api *secretsmanager.Client) string {
 	ttlNanoSeconds := (time.Second * 2).Nanoseconds()
 	cache, _ := secretcache.New(
 		func(c *secretcache.Cache) { c.Client = api },
@@ -315,7 +323,7 @@ func integTest_getSecretStringWithTTL(t *testing.T, api secretsmanageriface.Secr
 		return ""
 	}
 
-	resultString, err := cache.GetSecretString(*createResult.ARN)
+	resultString, err := cache.GetSecretString(context.Background(), *createResult.ARN)
 
 	if err != nil {
 		t.Error(err)
@@ -329,7 +337,7 @@ func integTest_getSecretStringWithTTL(t *testing.T, api secretsmanageriface.Secr
 
 	updatedSecretString := "This is v2 secret string"
 	updatedRequestToken := generateRandString(32)
-	_, err = api.UpdateSecret(&secretsmanager.UpdateSecretInput{
+	_, err = api.UpdateSecret(context.Background(), &secretsmanager.UpdateSecretInput{
 		SecretId:           createResult.ARN,
 		SecretString:       &updatedSecretString,
 		ClientRequestToken: &updatedRequestToken,
@@ -340,7 +348,7 @@ func integTest_getSecretStringWithTTL(t *testing.T, api secretsmanageriface.Secr
 		return *createResult.ARN
 	}
 
-	resultString, err = cache.GetSecretString(*createResult.ARN)
+	resultString, err = cache.GetSecretString(context.Background(), *createResult.ARN)
 
 	if err != nil {
 		t.Error(err)
@@ -354,7 +362,7 @@ func integTest_getSecretStringWithTTL(t *testing.T, api secretsmanageriface.Secr
 
 	time.Sleep(time.Nanosecond * time.Duration(ttlNanoSeconds))
 
-	resultString, err = cache.GetSecretString(*createResult.ARN)
+	resultString, _ = cache.GetSecretString(context.Background(), *createResult.ARN)
 	if updatedSecretString != resultString {
 		t.Errorf("Expected cached secret to be same as updated version - \"%s\", \"%s\"", resultString, updatedSecretString)
 		return *createResult.ARN
@@ -363,18 +371,24 @@ func integTest_getSecretStringWithTTL(t *testing.T, api secretsmanageriface.Secr
 	return *createResult.ARN
 }
 
-func integTest_getSecretStringNoSecret(t *testing.T, api secretsmanageriface.SecretsManagerAPI) string {
+func integTest_getSecretStringNoSecret(t *testing.T, api *secretsmanager.Client) string {
 	cache, _ := secretcache.New(
 		func(c *secretcache.Cache) { c.Client = api },
 	)
 
 	secretName := "NoSuchSecret"
-	_, err := cache.GetSecretString(secretName)
+	_, err := cache.GetSecretString(context.Background(), secretName)
 
 	if err == nil {
 		t.Errorf("Expected to not find a secret called %s", secretName)
-	} else if awsErr, _ := err.(awserr.Error); awsErr.Code() != secretsmanager.ErrCodeResourceNotFoundException {
-		t.Errorf("Expected %s err but got %s", secretsmanager.ErrCodeResourceNotFoundException, awsErr.Code())
+	} else {
+		var rnf *types.ResourceNotFoundException
+		var oe *smithy.OperationError
+		if errors.As(err, &rnf) {
+			// expected error
+		} else if errors.As(err, &oe) {
+			t.Errorf("failed to call service: %s, operation: %s, error: %v", oe.Service(), oe.Operation(), oe.Unwrap())
+		}
 	}
 
 	return ""
